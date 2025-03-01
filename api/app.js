@@ -1,0 +1,116 @@
+const express = require('express');
+const http = require('http');
+const mongoose = require('mongoose');
+const dotenv = require('dotenv');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const cors = require('cors');
+const path = require('path');
+const { Server } = require('socket.io');
+
+
+
+// Socket Manager
+const SocketManager = require('./socketManager');
+const NotificationService = require('./notificationService')
+
+// Routes
+const authRoute = require("./Routes/auth");
+const userRoute = require("./Routes/users");
+const appointmentRoute = require('./Routes/appointement');
+const myAppointmentRoute = require("./Routes/myappointement");
+const adminspaceRoute = require("./Routes/adminspace");
+const doctor = require('./Routes/doctor');
+const reportRoutes = require('./Routes/report');
+const videoCallRoute = require('./Routes/videoCall');
+const availability = require('./Routes/availability');;
+const experience = require('./Routes/experience') ; 
+const education = require('./Routes/education');
+const feedback = require('./Routes/feedback'); 
+const verification = require('./Routes/verification') ;
+const prescription = require('./Routes/prescription') ; 
+const notification = require('./Routes/notification');
+const chatRoute = require('./Routes/chat');
+// Middlewares
+const requireAuth = require('./middleware/requireAuth');
+const requireAdmin = require('./middleware/requireAdmin');
+const requireDoctor = require('./middleware/requireDoctor');
+const checkIdMatchesToken = require('./middleware/checkIdMatchesToken');
+const socketMiddleware = require('./middleware/socketMiddleware');
+const socketAuthMiddleware = require('./middleware/socketAuthMiddleware');
+
+dotenv.config();
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+const socketManager = new SocketManager(server);
+NotificationService.setSocketManager(socketManager);
+
+// MongoDB Connection
+mongoose.connect(process.env.MONGO_URL)
+  .then(() => console.log("Connected to MongoDB"))
+  .catch((err) => console.error("Could not connect to MongoDB", err));
+
+
+  const corsOptions = {
+    origin: process.env.CLIENT_URL || 'http://localhost:3000', 
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+  };
+  
+  
+  
+  
+// Middleware
+app.use(cors(corsOptions));
+app.use(express.json());
+app.use(helmet());
+app.use(morgan("common"));
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).send('Something broke!');
+});
+
+// Socket Middleware
+socketManager.getIO().use((socket, next) => {
+  socketAuthMiddleware(socket, next);
+});
+
+// Routes
+app.use("/api/auth", authRoute);
+app.use("/api/users", userRoute);
+app.use("/api/appointment" ,  appointmentRoute);
+app.use("/api/my-appointment", myAppointmentRoute);
+app.use("/api/availability", availability);
+app.use("/api/admin-space", adminspaceRoute);
+app.use("/api/doctor",  doctor);
+app.use("/api/experience",  experience);
+app.use("/api/education",  education);
+app.use('/api/reports' ,  reportRoutes);
+app.use('/api/video-call' ,  videoCallRoute);
+app.use('/api/verification' ,  verification);
+app.use('/api/feedback',feedback) ; 
+app.use('/api/prescription',prescription) ; 
+app.use('/api/notifications' , notification) ; 
+app.use('/api/chat', chatRoute);
+app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+module.exports = {
+  app,
+  server,
+  socketManager,
+  io 
+};
+
+// Start server if this file is run directly
+if (require.main === module) {
+  const PORT = process.env.PORT || 8000;
+  server.listen(PORT, () => {
+    console.log(`Backend server is running on port ${PORT}`);
+  });
+}

@@ -1,0 +1,251 @@
+import React, { useEffect, useRef, useState } from "react";
+import io from "socket.io-client";
+
+const VideoCall = ({ appointmentId }) => {
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const peerConnection = useRef(null);
+  const socket = useRef(null);
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [isInitiator, setIsInitiator] = useState(false);
+
+  const servers = {
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+    ],
+  };
+
+  const createPeerConnection = () => {
+    if (peerConnection.current) {
+      peerConnection.current.close();
+    }
+
+    const pc = new RTCPeerConnection(servers);
+    peerConnection.current = pc;
+
+    // Add local tracks to the peer connection
+    if (localStream) {
+      localStream.getTracks().forEach((track) => {
+        pc.addTrack(track, localStream);
+      });
+    }
+
+    // Handle remote stream
+    pc.ontrack = (event) => {
+      const newRemoteStream = new MediaStream();
+      event.streams[0].getTracks().forEach((track) => {
+        newRemoteStream.addTrack(track);
+      });
+      setRemoteStream(newRemoteStream);
+    };
+
+    // Handle ICE candidates
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socket.current?.connected) {
+        socket.current.emit("ice-candidate", {
+          candidate: event.candidate,
+          roomId: appointmentId,
+        });
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log("ICE Connection State:", pc.iceConnectionState);
+      if (pc.iceConnectionState === "disconnected" || 
+          pc.iceConnectionState === "failed") {
+        handleDisconnection();
+      }
+    };
+
+    return pc;
+  };
+
+  const handleDisconnection = () => {
+    console.log("Handling disconnection...");
+    setIsConnected(false);
+    if (socket.current?.connected) {
+      socket.current.emit("join-room", { roomId: appointmentId });
+    }
+  };
+
+  const initializeMedia = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        // audio: true,
+      });
+      setLocalStream(stream);
+
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+
+      return stream;
+    } catch (error) {
+      console.error("Error accessing media devices:", error);
+      return null;
+    }
+  };
+
+  // Initialize media devices
+  useEffect(() => {
+    initializeMedia();
+
+    return () => {
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, []);
+
+  // Set up socket connection and WebRTC handlers
+  useEffect(() => {
+    if (!localStream) return;
+
+    socket.current = io("http://localhost:5000", {
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: 5
+    });
+
+    const initializeConnection = () => {
+      createPeerConnection();
+      socket.current.emit("join-room", { roomId: appointmentId });
+    };
+
+    socket.current.on("connect", () => {
+      console.log("Socket connected");
+      initializeConnection();
+    });
+
+    socket.current.on("disconnect", () => {
+      console.log("Socket disconnected");
+      setIsConnected(false);
+    });
+
+    socket.current.on("reconnect", () => {
+      console.log("Socket reconnected");
+      initializeConnection();
+    });
+
+    socket.current.on("room-participants", async (participants) => {
+      console.log(`Room participants: ${participants.length}`);
+      const isFirst = participants.length === 1;
+      setIsInitiator(isFirst);
+      
+      if (!isFirst && peerConnection.current) {
+        try {
+          const offer = await peerConnection.current.createOffer();
+          await peerConnection.current.setLocalDescription(offer);
+          socket.current.emit("offer", {
+            sdp: offer,
+            roomId: appointmentId,
+          });
+        } catch (error) {
+          console.error("Error creating offer:", error);
+        }
+      }
+    });
+
+    socket.current.on("offer", async ({ sdp }) => {
+      if (!peerConnection.current) return;
+      try {
+        if (peerConnection.current.signalingState !== "stable") {
+          console.log("Ignoring offer in non-stable state");
+          return;
+        }
+        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(sdp));
+        const answer = await peerConnection.current.createAnswer();
+        await peerConnection.current.setLocalDescription(answer);
+        socket.current.emit("answer", {
+          sdp: answer,
+          roomId: appointmentId,
+        });
+        setIsConnected(true);
+      } catch (error) {
+        console.error("Error handling offer:", error);
+      }
+    });
+
+    socket.current.on("answer", async ({ sdp }) => {
+      if (!peerConnection.current) return;
+      try {
+        if (peerConnection.current.signalingState === "stable") {
+          console.log("Ignoring answer in stable state");
+          return;
+        }
+        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(sdp));
+        setIsConnected(true);
+      } catch (error) {
+        console.error("Error handling answer:", error);
+      }
+    });
+
+    socket.current.on("ice-candidate", async ({ candidate }) => {
+      if (!peerConnection.current || !peerConnection.current.remoteDescription) return;
+      try {
+        await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (error) {
+        console.error("Error adding ICE candidate:", error);
+      }
+    });
+
+    return () => {
+      if (socket.current) {
+        socket.current.disconnect();
+      }
+      if (peerConnection.current) {
+        peerConnection.current.close();
+      }
+    };
+  }, [localStream, appointmentId]);
+
+  // Update remote video when stream changes
+  useEffect(() => {
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = remoteStream;
+    }
+  }, [remoteStream]);
+
+  return (
+    <div className="p-4">
+      <h1 className="text-2xl font-bold mb-4">
+        Video Call for Appointment {appointmentId}
+      </h1>
+      <div className="mb-2">
+        <span className={`inline-block px-2 py-1 rounded text-sm ${
+          isConnected ? 'bg-green-500 text-white' : 'bg-yellow-500 text-black'
+        }`}>
+          {isConnected ? 'Connected' : 'Waiting for connection...'}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-4">
+        <div className="flex-1 min-w-[300px]">
+          <h3 className="text-lg font-semibold mb-2">Local Stream</h3>
+          <video
+            ref={localVideoRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full border border-gray-300 rounded-lg bg-gray-100"
+          />
+        </div>
+        <div className="flex-1 min-w-[300px]">
+          <h3 className="text-lg font-semibold mb-2">Remote Stream</h3>
+          <video
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            className="w-full border border-gray-300 rounded-lg bg-gray-100"
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default VideoCall;

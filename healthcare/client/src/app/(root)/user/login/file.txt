@@ -1,0 +1,35 @@
+ {/* Verification Dialog */}
+      <Dialog 
+        open={openVerificationDialog} 
+        onClose={() => setOpenVerificationDialog(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Verify Your Account</DialogTitle>
+        <DialogContent>
+          <p className="mb-4">Please enter the 6-digit verification code sent to your email.</p>
+          <div className="flex justify-center space-x-2">
+            {verificationCode.map((digit, index) => (
+              <TextField
+                key={index}
+                variant="outlined"
+                inputProps={{ 
+                  maxLength: 1, 
+                  style: { textAlign: 'center' } 
+                }}
+                value={digit}
+                onChange={(e) => handleVerificationCodeChange(index, e.target.value)}
+                className="w-12"
+              />
+            ))}
+          </div>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpenVerificationDialog(false)} color="primary">
+            Cancel
+          </Button>
+          <Button onClick={handleVerifyCode} color="primary" variant="contained">
+            Verify
+          </Button>
+        </DialogActions>
+      </Dialog>
